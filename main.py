@@ -18,8 +18,11 @@ def parse_args():
     parser.add_argument("--output", type=Path, default=Path("graph.png"), help="имя файла PNG")
     parser.add_argument("--ascii", action="store_true", help="напечатать ASCII-дерево")
     parser.add_argument("--depth", type=int, default=3, help="максимальная глубина")
+    parser.add_argument("--reverse", action="store_true", help="обратные зависимости в тестовом режиме")
     args = parser.parse_args()
 
+    if args.reverse and not args.test:
+        parser.error("--reverse: нужен режим --test")
     pattern = r"[A-Z]+" if args.test else r"[A-Za-z0-9][A-Za-z0-9_-]*"
     if not re.fullmatch(pattern, args.package):
         parser.error("--package: неправильное имя пакета")
@@ -123,6 +126,14 @@ def label(node):
     return " ".join(node) if isinstance(node, tuple) else node
 
 
+def reverse_repository(repo):
+    result = {name: [] for name in repo}
+    for name, children in repo.items():
+        for child in children:
+            result[child].append(name)
+    return result
+
+
 def main():
     parser, args = parse_args()
     try:
@@ -130,6 +141,8 @@ def main():
             repo = read_test_repository(args.repository)
             if args.package not in repo:
                 raise ValueError(f"Пакет {args.package} не найден")
+            if args.reverse:
+                repo = reverse_repository(repo)
             root = args.package
             dependencies = repo.__getitem__
         else:
@@ -137,6 +150,10 @@ def main():
             root = index.select(args.package)
             dependencies = index.dependencies
         graph = build_graph(root, dependencies, args.depth)
+        if args.reverse:
+            packages = [node for node in graph if node != root]
+            print(", ".join(packages) or "Обратных зависимостей нет")
+            return
         for node, children in graph.items():
             print(f"{label(node)}: {', '.join(map(label, children)) or '-'}")
     except (OSError, ValueError, KeyError, TypeError) as error:
