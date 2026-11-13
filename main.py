@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import subprocess
 from functools import cache
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -18,11 +19,8 @@ def parse_args():
     parser.add_argument("--output", type=Path, default=Path("graph.png"), help="имя файла PNG")
     parser.add_argument("--ascii", action="store_true", help="напечатать ASCII-дерево")
     parser.add_argument("--depth", type=int, default=3, help="максимальная глубина")
-    parser.add_argument("--reverse", action="store_true", help="обратные зависимости в тестовом режиме")
     args = parser.parse_args()
 
-    if args.reverse and not args.test:
-        parser.error("--reverse: нужен режим --test")
     pattern = r"[A-Z]+" if args.test else r"[A-Za-z0-9][A-Za-z0-9_-]*"
     if not re.fullmatch(pattern, args.package):
         parser.error("--package: неправильное имя пакета")
@@ -41,6 +39,10 @@ def parse_args():
             parser.error("--repository: ожидается HTTP(S) URL индекса Cargo")
     if args.output.suffix.lower() != ".png" or args.output.is_dir() or not args.output.parent.is_dir():
         parser.error("--output: укажите имя файла .png в существующей папке")
+    if args.test:
+        source = Path(args.repository).resolve()
+        if source in (args.output.resolve(), args.output.with_suffix(".dot").resolve()):
+            parser.error("--output: выходной файл совпадает с тестовым репозиторием")
     if args.depth < 0:
         parser.error("--depth: глубина должна быть неотрицательной")
     return parser, args
@@ -88,8 +90,9 @@ class CargoIndex:
             if dep["kind"] == "dev" or dep["optional"]:
                 continue
             registry = dep.get("registry")
-            index = self if not registry else CargoIndex(registry)
-            result.append(index.select(dep.get("package") or dep["name"], dep["req"]))
+            if registry and registry.removeprefix("sparse+").rstrip("/") != self.url:
+                raise ValueError(f"Зависимость {dep['name']} находится в другом индексе: {registry}")
+            result.append(self.select(dep.get("package") or dep["name"], dep["req"]))
         return result
 
 
@@ -126,12 +129,40 @@ def label(node):
     return " ".join(node) if isinstance(node, tuple) else node
 
 
-def reverse_repository(repo):
-    result = {name: [] for name in repo}
-    for name, children in repo.items():
+def print_tree(root, graph, max_depth):
+    stack = [(root, "", "", [])]
+    while stack:
+        node, prefix, branch, parents = stack.pop()
+        cycle = node in parents
+        print(prefix + branch + label(node) + (" [cycle]" if cycle else ""))
+        if cycle or len(parents) == max_depth:
+            continue
+        if branch:
+            prefix += "    " if branch == "`-- " else "|   "
+        children = graph[node]
+        for i, child in reversed(list(enumerate(children))):
+            branch = "`-- " if i == len(children) - 1 else "|-- "
+            stack.append((child, prefix, branch, parents + [node]))
+
+
+def save_graph(graph, output):
+    dot = output.with_suffix(".dot")
+    lines = ["digraph dependencies {", "    rankdir=LR;"]
+    for node, children in graph.items():
+        source = json.dumps(label(node))
+        lines.append(f"    {source};")
         for child in children:
-            result[child].append(name)
-    return result
+            lines.append(f"    {source} -> {json.dumps(label(child))};")
+    lines.append("}")
+    dot.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        subprocess.run(["dot", "-Tpng", "-o", str(output), str(dot)], check=True)
+    except FileNotFoundError as error:
+        raise ValueError("Установите Graphviz и добавьте dot в PATH") from error
+    except subprocess.CalledProcessError as error:
+        raise ValueError("Graphviz не смог сохранить PNG") from error
+    print(f"DOT: {dot}")
+    print(f"PNG: {output}")
 
 
 def main():
@@ -141,8 +172,6 @@ def main():
             repo = read_test_repository(args.repository)
             if args.package not in repo:
                 raise ValueError(f"Пакет {args.package} не найден")
-            if args.reverse:
-                repo = reverse_repository(repo)
             root = args.package
             dependencies = repo.__getitem__
         else:
@@ -150,12 +179,9 @@ def main():
             root = index.select(args.package)
             dependencies = index.dependencies
         graph = build_graph(root, dependencies, args.depth)
-        if args.reverse:
-            packages = [node for node in graph if node != root]
-            print(", ".join(packages) or "Обратных зависимостей нет")
-            return
-        for node, children in graph.items():
-            print(f"{label(node)}: {', '.join(map(label, children)) or '-'}")
+        save_graph(graph, args.output)
+        if args.ascii:
+            print_tree(root, graph, args.depth)
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.exit(1, f"Ошибка: {error}\n")
 

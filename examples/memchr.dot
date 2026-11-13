@@ -1,0 +1,4 @@
+digraph dependencies {
+    rankdir=LR;
+    "memchr 2.8.3";
+}
