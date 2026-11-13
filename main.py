@@ -7,6 +7,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
+from versions import matches, version_key
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Граф зависимостей Cargo")
@@ -67,24 +69,76 @@ class CargoIndex:
 
         return [row for row in rows if not row["yanked"]]
 
-    def latest(self, package):
-        stable = [row for row in self.versions(package) if "-" not in row["vers"].split("+")[0]]
-        if not stable:
-            raise ValueError(f"У пакета {package} нет стабильных версий")
-        return max(stable, key=lambda row: tuple(map(int, row["vers"].split("+")[0].split("."))))
+    @cache
+    def select(self, package, requirement="*"):
+        candidates = [row for row in self.versions(package) if matches(row["vers"], requirement)]
+        if not candidates:
+            raise ValueError(f"У пакета {package} нет подходящей версии ({requirement})")
+        row = max(candidates, key=lambda row: version_key(row["vers"]))
+        return row["name"], row["vers"]
+
+    def dependencies(self, node):
+        package, version = node
+        row = next(row for row in self.versions(package) if row["vers"] == version)
+        result = []
+        for dep in row["deps"]:
+            if dep["kind"] == "dev" or dep["optional"]:
+                continue
+            registry = dep.get("registry")
+            index = self if not registry else CargoIndex(registry)
+            result.append(index.select(dep.get("package") or dep["name"], dep["req"]))
+        return result
+
+
+def read_test_repository(filename):
+    repo = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
+    if not isinstance(repo, dict):
+        raise ValueError("Тестовый репозиторий должен быть JSON-объектом")
+    for name, deps in repo.items():
+        if not re.fullmatch(r"[A-Z]+", name) or not isinstance(deps, list):
+            raise ValueError(f"Неверная запись о пакете {name}")
+        if any(not isinstance(dep, str) or dep not in repo for dep in deps):
+            raise ValueError(f"У пакета {name} есть неизвестная зависимость")
+    return repo
+
+
+def build_graph(root, dependencies, max_depth):
+    graph = {}
+    depths = {}
+    stack = [(root, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if node in depths and depths[node] <= depth:
+            continue
+        depths[node] = depth
+        if depth == max_depth:
+            graph[node] = []
+            continue
+        graph[node] = list(dict.fromkeys(dependencies(node)))
+        stack.extend((child, depth + 1) for child in reversed(graph[node]))
+    return graph
+
+
+def label(node):
+    return " ".join(node) if isinstance(node, tuple) else node
 
 
 def main():
     parser, args = parse_args()
-    if args.test:
-        parser.error("--test: тестовый репозиторий появится на этапе 3")
     try:
-        row = CargoIndex(args.repository).latest(args.package)
-        print(f"{row['name']} {row['vers']}")
-        if not row["deps"]:
-            print("Прямых зависимостей нет")
-        for dep in row["deps"]:
-            print(f"{dep.get('package') or dep['name']} {dep['req']} ({dep['kind'] or 'normal'})")
+        if args.test:
+            repo = read_test_repository(args.repository)
+            if args.package not in repo:
+                raise ValueError(f"Пакет {args.package} не найден")
+            root = args.package
+            dependencies = repo.__getitem__
+        else:
+            index = CargoIndex(args.repository)
+            root = index.select(args.package)
+            dependencies = index.dependencies
+        graph = build_graph(root, dependencies, args.depth)
+        for node, children in graph.items():
+            print(f"{label(node)}: {', '.join(map(label, children)) or '-'}")
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.exit(1, f"Ошибка: {error}\n")
 
