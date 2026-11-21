@@ -11,6 +11,16 @@ python main.py --help
 python main.py --package regex --repository https://index.crates.io --depth 3 --output graph.png --ascii
 ```
 
+В PowerShell можно запустить программу через скрипт. Он также добавляет
+переносимый Graphviz из `.venv/graphviz` в `PATH`, если эта папка существует.
+
+```powershell
+.\run.ps1 --package regex --depth 3 --output graph.png --ascii
+```
+
+Исходный код находится в `src`, тесты — в `tests`. Корневой `main.py`
+запускает приложение из `src`.
+
 | Опция | Значение |
 | --- | --- |
 | `--package` | Имя корневого пакета, обязательный параметр |
@@ -24,7 +34,8 @@ python main.py --package regex --repository https://index.crates.io --depth 3 --
 
 ### 1. Параметры CLI
 
-В коммите `6318009` команда `python main.py --package regex` выводит:
+В коммите `feat: add CLI configuration and validation` команда
+`python main.py --package regex` выводит:
 
 ```text
 package=regex
@@ -50,7 +61,7 @@ depth=3
 
 ### 2. Прямые зависимости
 
-В коммите `18e004c` команда `python main.py --package regex --repository https://index.crates.io` напечатала версию `1.13.1` и все записи её поля `deps`. Среди них обычные зависимости `aho-corasick`, `memchr`, `regex-automata`, `regex-syntax` и зависимости разработки `anyhow`, `doc-comment`, `env_logger`, `quickcheck`, `regex-test`. Несуществующий пакет завершил работу с сообщением об ошибке и кодом `1`. [Формат индекса Cargo](https://doc.rust-lang.org/cargo/reference/registry-index.html)
+В коммите `feat: read direct dependencies from Cargo index` команда `python main.py --package regex --repository https://index.crates.io` напечатала версию `1.13.1` и все записи её поля `deps`. Среди них обычные зависимости `aho-corasick`, `memchr`, `regex-automata`, `regex-syntax` и зависимости разработки `anyhow`, `doc-comment`, `env_logger`, `quickcheck`, `regex-test`. Несуществующий пакет завершил работу с сообщением об ошибке и кодом `1`. [Формат индекса Cargo](https://doc.rust-lang.org/cargo/reference/registry-index.html)
 
 ### 3. DFS и тестовый репозиторий
 
@@ -66,11 +77,13 @@ python main.py --test --repository examples/repository.json --package G --depth 
 - От `H` пакет `E` впервые достигается по пути `H → A → B → E`. DFS возвращается к нему по короткому пути `H → E` и добавляет рёбра `E → F` и `F → B`.
 - Для `G` на глубине 0 выводится только `G`.
 
-В коммите `e545818` те же команды без `--ascii` показывают граф списком смежности.
+В коммите `feat: build dependency graph with iterative DFS` те же команды
+без `--ascii` показывают граф списком смежности.
 
 ### 4. Обратные зависимости
 
-Режим `--reverse` доступен в коммите четвёртого этапа `41a1908`.
+Режим `--reverse` доступен в коммите четвёртого этапа
+`feat: find reverse dependencies in test repository`.
 
 ```powershell
 python main.py --test --repository examples/repository.json --reverse --package E --depth 1
